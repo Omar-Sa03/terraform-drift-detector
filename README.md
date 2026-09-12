@@ -1,120 +1,170 @@
-# Terraform Drift Detector
+# tdd (Terraform Drift Detector)
 
-Go CLI that compares Terraform state to live cloud APIs. It never runs `terraform plan` or `apply`.
+[![Go Version](https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat&logo=go)](https://go.dev/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-## What it does
+tdd is a lightweight, read-only drift detection tool for Terraform. It checks your cloud infrastructure by comparing your Terraform state against live cloud APIs directly, without running terraform plan or acquiring state locks.
 
-1. Reads expected resources from a local `terraform.tfstate` or an S3 backend object.
-2. Fetches matching live metadata from cloud provider APIs (AWS in v1).
-3. Normalizes both sides into a common resource model.
-4. Reports **deleted** resources, **modified** attributes, and **tag** changes (optional **created**/unmanaged).
-5. Prints a table, JSON, or a one-page dashboard. Scans can run once or on a cron schedule.
+## Why tdd?
 
-Azure and GCP adapters are registered as stubs so you can add API mappers later without changing the engine.
+Running `terraform plan` continuously to detect drift has clear disadvantages:
 
-## Install
+* Slow execution: Terraform must initialize backend plugins and download large provider binaries.
+* State locking: Generating a plan acquires write locks on the state file, which can block active CI/CD pipelines and developer deployments.
+* Broad permissions: Terraform often requires broader permissions than necessary just to plan.
 
-Requires Go 1.22+.
+`tdd` parses your `terraform.tfstate` directly (from a local file or remote S3 backend) and queries live resources using read-only cloud SDK calls. Scans complete in seconds without touching your deployment workflows.
+
+## Features
+
+* Drift detection: Spots out-of-band deletions, modified resource attributes, and tag changes.
+* Accurate comparison: Compares only attributes tracked by live cloud fetchers, avoiding false positives from computed defaults and internal Terraform metadata.
+* Multiple output formats: Clean terminal tables, JSON output for CI/CD scripting, and an embedded web dashboard.
+* Flexible scheduling: Includes a built-in cron scheduler for background scanning.
+* Single binary: Compiles down to a standalone binary with zero runtime dependencies.
+
+## Installation
+
+Requires Go 1.22 or higher.
 
 ```bash
+git clone https://github.com/Omar-Sa03/terraform-drift-detector.git
+cd terraform-drift-detector
+
+# Linux and macOS
 go build -o tdd ./cmd/tdd
-```
 
-On Windows:
-
-```powershell
+# Windows
 go build -o tdd.exe ./cmd/tdd
 ```
 
-## AWS credentials
+## AWS Authentication
 
-Uses the default AWS SDK chain: environment variables, shared config (`AWS_PROFILE`), or instance/container roles.
+tdd uses the standard AWS SDK credential chain. You can authenticate using standard AWS CLI profiles or environment variables:
 
 ```bash
-export AWS_REGION=us-east-1
-# or: --region us-east-1
+# Option 1: Standard AWS CLI configuration
+aws configure
+
+# Option 2: Environment variables
+export AWS_REGION=eu-west-3
+export AWS_ACCESS_KEY_ID="AKIA..."
+export AWS_SECRET_ACCESS_KEY="..."
 ```
 
 ## Usage
 
-On-demand table:
+### Ad-hoc scan
+
+Run a scan against a local state file:
 
 ```bash
-./tdd scan --state testdata/example.tfstate
+./tdd scan --state ../infra/terraform.tfstate
 ```
 
-JSON:
+Example terminal output:
+
+```text
+Scanned: 2026-09-12T09:28:37Z
+State:   terraform.tfstate
+Summary: 1 expected, 1 live, 2 drifts (deleted=0 modified=1 tags=1 created=0)
+
+KIND         ADDRESS                  PATH        BEFORE                                 AFTER
+modified     aws_s3_bucket.my_bucket  versioning  [map[enabled:false mfa_delete:false]]  [map[enabled:true mfa_delete:false]]
+tag_changed  aws_s3_bucket.my_bucket  tags.env                                           develop
+```
+
+### Remote S3 state backend
+
+Scan state stored in an S3 bucket:
 
 ```bash
-./tdd scan --state terraform.tfstate --json
+./tdd scan --backend-s3 my-tf-bucket/prod/terraform.tfstate --region eu-west-3
 ```
 
-Remote state:
+### JSON output for automation
+
+Export structured JSON for alerting or pipeline scripts:
 
 ```bash
-./tdd scan --backend-s3 my-tf-state-bucket/env/terraform.tfstate --region us-east-1
+./tdd scan --state terraform.tfstate --json --out .tdd/report.json
 ```
 
-Schedule (process stays running):
+### Scheduled background scans
+
+Run tdd on a recurring schedule (for example, every 15 minutes):
 
 ```bash
-./tdd scan --state terraform.tfstate --schedule "*/30 * * * *"
+./tdd scan --state terraform.tfstate --schedule "*/15 * * * *"
 ```
 
-Dashboard (last report + **Run scan**):
+### Web dashboard
+
+Launch the local web dashboard to view drift reports and trigger scans on demand:
 
 ```bash
 ./tdd serve --state terraform.tfstate --listen 127.0.0.1:8080
 ```
 
-Open `http://127.0.0.1:8080`. Reports are written to `.tdd/last-report.json` by default (`--out`).
+Open http://127.0.0.1:8080 in your browser.
 
-`--unmanaged` also flags live objects returned by fetchers that are not in state (v1 AWS fetch is ID-driven from state, so this is mainly useful as you extend fetchers).
+## Supported AWS Resources (v1)
 
-## Supported AWS types (v1)
+| Terraform Resource | Live Attributes Monitored |
+|---|---|
+| `aws_s3_bucket` | Bucket existence, tags, versioning status (Enabled / Suspended) |
+| `aws_instance` | AMI, instance type, subnet ID, availability zone, security groups, tags |
+| `aws_security_group` | Group name, description, VPC ID, tags |
+| `aws_vpc` | CIDR block, tags |
+| `aws_subnet` | CIDR block, VPC ID, availability zone, tags |
+| `aws_iam_role` | Role name, ARN, assume role policy document, tags |
 
-| Terraform type       | API                          |
-|----------------------|------------------------------|
-| `aws_instance`       | EC2 DescribeInstances        |
-| `aws_s3_bucket`      | HeadBucket + GetBucketTagging |
-| `aws_security_group` | DescribeSecurityGroups       |
-| `aws_vpc`            | DescribeVpcs                 |
-| `aws_subnet`         | DescribeSubnets              |
-| `aws_iam_role`       | GetRole + ListRoleTags       |
+Resources in the state file that are not yet implemented are skipped with a warning message. Data sources are ignored.
 
-Unknown types are skipped with a warning. Data sources in state are ignored.
+## Architecture
 
-## Layout
-
-- `cmd/tdd` — CLI (`scan`, `serve`)
-- `internal/state` — Terraform state v3/v4 + local/S3 loaders
-- `internal/model` — shared `Resource` / `Drift` / `Report`
-- `internal/provider` — registry; `aws` implementation; Azure/GCP stubs
-- `internal/compare` — drift engine
-- `internal/scan` — orchestrator
-- `internal/report` — table + JSON + file store
-- `internal/schedule` — cron runner
-- `internal/http` + `web/` — thin dashboard
-- `testdata/` — sample state fixtures
-
-## Extending providers
-
-Implement `provider.Fetcher`:
-
-```go
-type Fetcher interface {
-  Name() string
-  Supports(tfType string) bool
-  Fetch(ctx context.Context, expected []model.Resource) ([]model.Resource, error)
-}
+```text
+  +------------------------+       +------------------------+
+  |  Local / Remote State  |       |     Live Cloud API     |
+  |    (terraform.tfstate) |       |   (AWS SDK Go v2)      |
+  +-----------+------------+       +-----------+------------+
+              |                                |
+              v                                v
+       [State Loader]                   [Cloud Fetcher]
+              |                                |
+              +---------------+----------------+
+                              |
+                              v
+                     [Comparison Engine]
+                              |
+               +--------------+--------------+
+               |              |              |
+               v              v              v
+         Terminal Table      JSON      Web Dashboard
 ```
 
-Register it in `cmd/tdd` next to the AWS fetcher. Map live API fields onto Terraform-like attribute names (`instance_type`, `cidr_block`, `tags`) so the comparer stays provider-agnostic.
-
-Replace `provider.AzureStub()` / `provider.GCPStub()` when those APIs are wired.
+* `internal/state`: Parses Terraform state formats (v3 and v4), with local file and S3 loaders.
+* `internal/provider`: Provider interfaces and cloud fetchers (AWS implementation with pluggable stubs for Azure and GCP).
+* `internal/compare`: Comparison engine that normalizes data types, filters ignored metadata, and calculates diffs.
+* `internal/http` and `web`: Embedded HTTP server and web dashboard for interactive review.
 
 ## Tests
+
+Run the test suite:
 
 ```bash
 go test ./...
 ```
+
+## Contributing
+
+To add support for additional AWS resources or cloud providers:
+
+1. Implement the `provider.Fetcher` interface in `internal/provider/`.
+2. Map live SDK fields to corresponding Terraform attribute names.
+3. Add unit tests with mock API responses.
+4. Submit a pull request.
+
+## License
+
+This project is licensed under the MIT License.
