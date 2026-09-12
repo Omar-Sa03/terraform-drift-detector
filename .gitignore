@@ -1,5 +1,26 @@
-.tdd/
+# Binaries
 /tdd
 /tdd.exe
 *.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test artifacts & coverage
+*.test
+*.out
+coverage.txt
+
+# Editor / IDE artifacts
+.idea/
+.vscode/
+*.swp
 *~
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# TDD local cache & report directory
+.tdd/
