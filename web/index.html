@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Terraform Drift Detector</title>
+  <style>
+    :root { font-family: ui-sans-serif, system-ui, sans-serif; color: #0f172a; background: #f8fafc; }
+    body { margin: 0; }
+    header { background: #0f172a; color: #f8fafc; padding: 1.25rem 1.5rem; display: flex; justify-content: space-between; align-items: center; gap: 1rem; }
+    main { padding: 1.5rem; max-width: 1200px; margin: 0 auto; }
+    .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 0.75rem; margin-bottom: 1.25rem; }
+    .card { background: white; border: 1px solid #e2e8f0; border-radius: 10px; padding: 0.9rem; }
+    .card strong { display: block; font-size: 1.4rem; }
+    button { background: #38bdf8; color: #0f172a; border: 0; border-radius: 8px; padding: 0.55rem 0.9rem; font-weight: 600; cursor: pointer; }
+    button:disabled { opacity: 0.6; cursor: wait; }
+    table { width: 100%; border-collapse: collapse; background: white; border-radius: 10px; overflow: hidden; }
+    th, td { text-align: left; padding: 0.65rem 0.75rem; border-bottom: 1px solid #e2e8f0; font-size: 0.9rem; vertical-align: top; }
+    th { background: #e2e8f0; }
+    .kind { font-weight: 700; text-transform: uppercase; font-size: 0.75rem; }
+    .deleted { color: #b91c1c; }
+    .modified { color: #c2410c; }
+    .tag_changed { color: #7c3aed; }
+    .created { color: #0369a1; }
+    .muted { color: #64748b; }
+    code { font-size: 0.82rem; }
+    .warn { color: #92400e; background: #fef3c7; padding: 0.75rem; border-radius: 8px; margin-bottom: 1rem; }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1 style="margin:0;font-size:1.15rem">Terraform Drift Detector</h1>
+      <div class="muted" id="meta">Loading…</div>
+    </div>
+    <button id="run">Run scan</button>
+  </header>
+  <main>
+    <div class="cards" id="cards"></div>
+    <div id="warnings"></div>
+    <table>
+      <thead>
+        <tr><th>Kind</th><th>Address</th><th>Path</th><th>Before</th><th>After</th></tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </main>
+  <script>
+    const cards = document.getElementById('cards');
+    const rows = document.getElementById('rows');
+    const meta = document.getElementById('meta');
+    const warnings = document.getElementById('warnings');
+    const run = document.getElementById('run');
+
+    function cell(v) { return v == null || v === '' ? '' : String(v); }
+
+    function render(rep) {
+      if (!rep || !rep.summary) {
+        meta.textContent = 'No report yet. Run a scan.';
+        cards.innerHTML = '';
+        rows.innerHTML = '<tr><td colspan="5" class="muted">No data</td></tr>';
+        return;
+      }
+      meta.textContent = (rep.scanned_at || '') + ' · ' + (rep.state_path || '');
+      const s = rep.summary;
+      const items = [
+        ['Expected', s.expected],
+        ['Live', s.actual],
+        ['Drifts', s.total_drifts],
+        ['Deleted', s.deleted],
+        ['Modified', s.modified],
+        ['Tags', s.tag_changed],
+        ['Created', s.created]
+      ];
+      cards.innerHTML = items.map(([k,v]) => `<div class="card"><span class="muted">${k}</span><strong>${v ?? 0}</strong></div>`).join('');
+      warnings.innerHTML = (rep.warnings || []).map(w => `<div class="warn">${w}</div>`).join('');
+      const drifts = rep.drifts || [];
+      if (!drifts.length) {
+        rows.innerHTML = '<tr><td colspan="5">No drift detected.</td></tr>';
+        return;
+      }
+      rows.innerHTML = drifts.map(d => `<tr>
+        <td class="kind ${d.kind}">${d.kind}</td>
+        <td><code>${cell(d.address)}</code></td>
+        <td><code>${cell(d.path)}</code></td>
+        <td>${cell(typeof d.before === 'object' ? JSON.stringify(d.before) : d.before)}</td>
+        <td>${cell(typeof d.after === 'object' ? JSON.stringify(d.after) : d.after)}</td>
+      </tr>`).join('');
+    }
+
+    async function load() {
+      const res = await fetch('/api/report');
+      render(await res.json());
+    }
+    run.addEventListener('click', async () => {
+      run.disabled = true;
+      try {
+        const res = await fetch('/api/scan', { method: 'POST' });
+        const body = await res.json();
+        if (!res.ok) throw new Error(body.error || res.statusText);
+        render(body);
+      } catch (err) {
+        meta.textContent = 'Scan failed: ' + err.message;
+      } finally {
+        run.disabled = false;
+      }
+    });
+    load();
+  </script>
+</body>
+</html>
