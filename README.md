@@ -1,7 +1,6 @@
 # tdd (Terraform Drift Detector)
 
 [![Go Version](https://img.shields.io/badge/Go-1.22+-00ADD8?style=flat&logo=go)](https://go.dev/)
-git
 
 tdd is a lightweight, read-only drift detection tool for Terraform. It checks your cloud infrastructure by comparing your Terraform state against live cloud APIs directly, without running terraform plan or acquiring state locks.
 
